@@ -63,9 +63,10 @@ public class TimestampIncrementingTableQuerier extends TableQuerier {
   private long timestampDelay;
 
   public TimestampIncrementingTableQuerier(QueryMode mode, String name, String topicPrefix,
+                                           String keyColumn,
                                            String timestampColumn, Long timestampOffset,
                                            String incrementingColumn, Long incrementingOffset, Long timestampDelay) {
-    super(mode, name, topicPrefix);
+    super(mode, name, topicPrefix, keyColumn);
     this.timestampColumn = timestampColumn;
     this.timestampOffset = timestampOffset;
     this.incrementingColumn = incrementingColumn;
@@ -176,11 +177,11 @@ public class TimestampIncrementingTableQuerier extends TableQuerier {
 
   @Override
   public SourceRecord extractRecord() throws SQLException {
-    Struct record = DataConverter.convertRecord(schema, resultSet);
+    Struct record = DataConverter.convertRecord(valueSchema, resultSet);
     Map<String, Long> offset = new HashMap<>();
     if (incrementingColumn != null) {
       Long id;
-      switch (schema.field(incrementingColumn).schema().type()) {
+      switch (valueSchema.field(incrementingColumn).schema().type()) {
         case INT32:
           id = (long) (Integer) record.get(incrementingColumn);
           break;
@@ -189,7 +190,7 @@ public class TimestampIncrementingTableQuerier extends TableQuerier {
           break;
         default:
           throw new ConnectException("Invalid type for incrementing column: "
-                                            + schema.field(incrementingColumn).schema().type());
+                                            + valueSchema.field(incrementingColumn).schema().type());
       }
 
       // If we are only using an incrementing column, then this must be incrementing. If we are also
@@ -208,7 +209,6 @@ public class TimestampIncrementingTableQuerier extends TableQuerier {
       offset.put(JdbcSourceTask.TIMESTAMP_FIELD, timestampOffset);
     }
 
-    // TODO: Key?
     final String topic;
     final Map<String, String> partition;
     switch (mode) {
@@ -224,6 +224,15 @@ public class TimestampIncrementingTableQuerier extends TableQuerier {
       default:
         throw new ConnectException("Unexpected query mode: " + mode);
     }
+
+    if (keyColumn != null && keySchema != null) {
+      Object key = record.get(keyColumn);
+
+      if (key != null) {
+        return new SourceRecord(partition, offset, topic, null, keySchema, key, record.schema(), record);
+      }
+    }
+
     return new SourceRecord(partition, offset, topic, record.schema(), record);
   }
 
@@ -233,6 +242,7 @@ public class TimestampIncrementingTableQuerier extends TableQuerier {
            "name='" + name + '\'' +
            ", query='" + query + '\'' +
            ", topicPrefix='" + topicPrefix + '\'' +
+           ", keyColumn='" + keyColumn + '\'' +
            ", timestampColumn='" + timestampColumn + '\'' +
            ", incrementingColumn='" + incrementingColumn + '\'' +
            '}';

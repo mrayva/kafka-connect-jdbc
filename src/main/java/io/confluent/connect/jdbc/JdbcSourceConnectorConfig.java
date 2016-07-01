@@ -72,6 +72,14 @@ public class JdbcSourceConnectorConfig extends AbstractConfig {
   public static final String MODE_INCREMENTING = "incrementing";
   public static final String MODE_TIMESTAMP_INCREMENTING = "timestamp+incrementing";
 
+  public static final String MESSAGE_KEY_COLUMN_NAME_CONFIG = "key.column.name";
+  private static final String MESSAGE_KEY_COLUMN_NAME_DOC =
+      "The name of the column to use as the compaction key for produced messages. An empty value "
+      + "indicates that no key will be supplied for produced records. "
+      + "The column may be nullable, but null values will be treated as a single compaction key.";
+  public static final String MESSAGE_KEY_COLUMN_NAME_DEFAULT = "";
+  private static final String MESSAGE_KEY_COLUMN_NAME_DISPLAY = "Message Key Column Name";
+
   public static final String INCREMENTING_COLUMN_NAME_CONFIG = "incrementing.column.name";
   private static final String INCREMENTING_COLUMN_NAME_DOC =
       "The name of the strictly incrementing column to use to detect new rows. Any empty value "
@@ -166,6 +174,7 @@ public class JdbcSourceConnectorConfig extends AbstractConfig {
         .define(VALIDATE_NON_NULL_CONFIG, Type.BOOLEAN, VALIDATE_NON_NULL_DEFAULT, Importance.LOW, VALIDATE_NON_NULL_DOC, MODE_GROUP, 4, Width.SHORT, VALIDATE_NON_NULL_DISPLAY,
                 MODE_DEPENDENTS_RECOMMENDER)
         .define(QUERY_CONFIG, Type.STRING, QUERY_DEFAULT, Importance.MEDIUM, QUERY_DOC, MODE_GROUP, 5, Width.SHORT, QUERY_DISPLAY)
+        .define(MESSAGE_KEY_COLUMN_NAME_CONFIG, Type.STRING, MESSAGE_KEY_COLUMN_NAME_DEFAULT, Importance.MEDIUM, MESSAGE_KEY_COLUMN_NAME_DOC, MODE_GROUP, 6, Width.MEDIUM, MESSAGE_KEY_COLUMN_NAME_DISPLAY)
         .define(POLL_INTERVAL_MS_CONFIG, Type.INT, POLL_INTERVAL_MS_DEFAULT, Importance.HIGH, POLL_INTERVAL_MS_DOC, CONNECTOR_GROUP, 1, Width.SHORT, POLL_INTERVAL_MS_DISPLAY)
         .define(BATCH_MAX_ROWS_CONFIG, Type.INT, BATCH_MAX_ROWS_DEFAULT, Importance.LOW, BATCH_MAX_ROWS_DOC, CONNECTOR_GROUP, 2, Width.SHORT, BATCH_MAX_ROWS_DISPLAY)
         .define(TABLE_POLL_INTERVAL_MS_CONFIG, Type.LONG, TABLE_POLL_INTERVAL_MS_DEFAULT, Importance.LOW, TABLE_POLL_INTERVAL_MS_DOC, CONNECTOR_GROUP, 3, Width.SHORT, TABLE_POLL_INTERVAL_MS_DISPLAY)
