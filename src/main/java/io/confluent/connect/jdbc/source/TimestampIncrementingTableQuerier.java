@@ -28,7 +28,9 @@ import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.util.Calendar;
 import java.util.Collections;
+import java.util.Date;
 import java.util.GregorianCalendar;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.TimeZone;
 
@@ -57,18 +59,21 @@ public class TimestampIncrementingTableQuerier extends TableQuerier {
   private static final Calendar UTC_CALENDAR = new GregorianCalendar(TimeZone.getTimeZone("UTC"));
 
   private String timestampColumn;
+  private Long timestampOffset;
   private String incrementingColumn;
+  private Long incrementingOffset = null;
   private long timestampDelay;
-  private TimestampIncrementingOffset offset;
 
   public TimestampIncrementingTableQuerier(QueryMode mode, String name, String topicPrefix,
-                                           String timestampColumn, String incrementingColumn,
-                                           Map<String, Object> offsetMap, Long timestampDelay) {
-    super(mode, name, topicPrefix);
+                                           String keyColumn,
+                                           String timestampColumn, Long timestampOffset,
+                                           String incrementingColumn, Long incrementingOffset, Long timestampDelay) {
+    super(mode, name, topicPrefix, keyColumn);
     this.timestampColumn = timestampColumn;
+    this.timestampOffset = timestampOffset;
     this.incrementingColumn = incrementingColumn;
+    this.incrementingOffset = incrementingOffset;
     this.timestampDelay = timestampDelay;
-    this.offset = TimestampIncrementingOffset.fromMap(offsetMap);
   }
 
   @Override
@@ -149,40 +154,41 @@ public class TimestampIncrementingTableQuerier extends TableQuerier {
   @Override
   protected ResultSet executeQuery() throws SQLException {
     if (incrementingColumn != null && timestampColumn != null) {
-      Timestamp tsOffset = offset.getTimestampOffset();
-      Long incOffset = offset.getIncrementingOffset();
+      Timestamp startTime = new Timestamp(timestampOffset == null ? 0 : timestampOffset);
+
       Timestamp endTime = new Timestamp(JdbcUtils.getCurrentTimeOnDB(stmt.getConnection(), UTC_CALENDAR).getTime() - timestampDelay);
       stmt.setTimestamp(1, endTime, UTC_CALENDAR);
-      stmt.setTimestamp(2, tsOffset, UTC_CALENDAR);
-      stmt.setLong(3, incOffset);
-      stmt.setTimestamp(4, tsOffset, UTC_CALENDAR);
-      log.debug("Executing prepared statement with start time value = {} end time = {} and incrementing value = {}",
-              JdbcUtils.formatUTC(tsOffset),
-              JdbcUtils.formatUTC(endTime),
-              incOffset);
+      stmt.setTimestamp(2, startTime, UTC_CALENDAR);
+      stmt.setLong(3, (incrementingOffset == null ? -1 : incrementingOffset));
+      stmt.setTimestamp(4, startTime, UTC_CALENDAR);
+      log.debug("Executing prepared statement with start time value = " + timestampOffset + " (" + startTime.toString() + ") "
+              + " end time " + endTime.toString()
+              + " and incrementing value = " + incrementingOffset);
+
     } else if (incrementingColumn != null) {
-      Long incOffset = offset.getIncrementingOffset();
-      stmt.setLong(1, incOffset);
-      log.debug("Executing prepared statement with incrementing value = {}", incOffset);
+      stmt.setLong(1, (incrementingOffset == null ? -1 : incrementingOffset));
+      log.debug("Executing prepared statement with incrementing value = " + incrementingOffset);
+
     } else if (timestampColumn != null) {
-      Timestamp tsOffset = offset.getTimestampOffset();
+      Timestamp startTime = new Timestamp(timestampOffset == null ? 0 : timestampOffset);
       Timestamp endTime = new Timestamp(JdbcUtils.getCurrentTimeOnDB(stmt.getConnection(), UTC_CALENDAR).getTime() - timestampDelay);
-      stmt.setTimestamp(1, tsOffset, UTC_CALENDAR);
+      stmt.setTimestamp(1, startTime, UTC_CALENDAR);
       stmt.setTimestamp(2, endTime, UTC_CALENDAR);
-      log.debug("Executing prepared statement with timestamp value = {} end time = {}",
-              JdbcUtils.formatUTC(tsOffset),
-              JdbcUtils.formatUTC(endTime));
+      log.debug("Executing prepared statement with timestamp value = " + timestampOffset + " (" + JdbcUtils.formatUTC(startTime) + ") "
+              + " end time " + JdbcUtils.formatUTC(endTime));
+
     }
     return stmt.executeQuery();
   }
 
   @Override
   public SourceRecord extractRecord() throws SQLException {
-    Struct record = DataConverter.convertRecord(schema, resultSet);
-    Long id = null;
-    Timestamp latest = null;
+    Struct record = DataConverter.convertRecord(valueSchema, resultSet);
+    Map<String, Long> offset = new HashMap<>();
+
     if (incrementingColumn != null) {
-      switch (schema.field(incrementingColumn).schema().type()) {
+      Long id;
+      switch (valueSchema.field(incrementingColumn).schema().type()) {
         case INT32:
           id = (long) (Integer) record.get(incrementingColumn);
           break;
@@ -191,22 +197,25 @@ public class TimestampIncrementingTableQuerier extends TableQuerier {
           break;
         default:
           throw new ConnectException("Invalid type for incrementing column: "
-                                            + schema.field(incrementingColumn).schema().type());
+                                            + valueSchema.field(incrementingColumn).schema().type());
       }
 
       // If we are only using an incrementing column, then this must be incrementing. If we are also
       // using a timestamp, then we may see updates to older rows.
-      long incrementingOffset = offset.getIncrementingOffset();
-      assert (incrementingOffset == -1 || id > incrementingOffset) || timestampColumn != null;
-    }
-    if (timestampColumn != null) {
-      latest = (Timestamp) record.get(timestampColumn);
-      Timestamp timestampOffset = offset.getTimestampOffset();
-      assert timestampOffset != null && timestampOffset.compareTo(latest) <= 0;
-    }
-    offset = new TimestampIncrementingOffset(latest, id);
+      assert (incrementingOffset == null || id > incrementingOffset) || timestampColumn != null;
+      incrementingOffset = id;
 
-    // TODO: Key?
+      offset.put(JdbcSourceTask.INCREMENTING_FIELD, id);
+    }
+
+
+    if (timestampColumn != null) {
+      Date timestamp = (Date) record.get(timestampColumn);
+      assert timestampOffset == null || timestamp.getTime() >= timestampOffset;
+      timestampOffset = timestamp.getTime();
+      offset.put(JdbcSourceTask.TIMESTAMP_FIELD, timestampOffset);
+    }
+
     final String topic;
     final Map<String, String> partition;
     switch (mode) {
@@ -222,7 +231,15 @@ public class TimestampIncrementingTableQuerier extends TableQuerier {
       default:
         throw new ConnectException("Unexpected query mode: " + mode);
     }
-    return new SourceRecord(partition, offset.toMap(), topic, record.schema(), record);
+
+    if (keyColumn != null && keySchema != null) {
+      Object key = new Struct(keySchema).put(keyColumn, record.get(keyColumn));
+      if (key != null) {
+        return new SourceRecord(partition, offset, topic, null, keySchema, key, record.schema(), record);
+      }
+    }
+
+    return new SourceRecord(partition, offset, topic, record.schema(), record);
   }
 
   @Override
@@ -231,6 +248,7 @@ public class TimestampIncrementingTableQuerier extends TableQuerier {
            "name='" + name + '\'' +
            ", query='" + query + '\'' +
            ", topicPrefix='" + topicPrefix + '\'' +
+           ", keyColumn='" + keyColumn + '\'' +
            ", timestampColumn='" + timestampColumn + '\'' +
            ", incrementingColumn='" + incrementingColumn + '\'' +
            '}';

@@ -24,12 +24,19 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 
+import org.apache.kafka.connect.data.SchemaBuilder;
+//import org.slf4j.Logger;
+//import org.slf4j.LoggerFactory;
+
 /**
  * TableQuerier executes queries against a specific table. Implementations handle different types
  * of queries: periodic bulk loading, incremental loads using auto incrementing IDs, incremental
  * loads using timestamps, etc.
  */
 abstract class TableQuerier implements Comparable<TableQuerier> {
+
+  //private static final Logger log = LoggerFactory.getLogger(TableQuerier.class);
+  
   public enum QueryMode {
     TABLE, // Copying whole tables, with queries constructed automatically
     QUERY // User-specified query
@@ -39,16 +46,19 @@ abstract class TableQuerier implements Comparable<TableQuerier> {
   protected final String name;
   protected final String query;
   protected final String topicPrefix;
+  protected final String keyColumn;  
   protected long lastUpdate;
   protected PreparedStatement stmt;
   protected ResultSet resultSet;
-  protected Schema schema;
+  protected Schema keySchema;
+  protected Schema valueSchema;
 
-  public TableQuerier(QueryMode mode, String nameOrQuery, String topicPrefix) {
+  public TableQuerier(QueryMode mode, String nameOrQuery, String topicPrefix, String keyColumn) {
     this.mode = mode;
     this.name = mode.equals(QueryMode.TABLE) ? nameOrQuery : null;
     this.query = mode.equals(QueryMode.QUERY) ? nameOrQuery : null;
     this.topicPrefix = topicPrefix;
+    this.keyColumn = keyColumn;
     this.lastUpdate = 0;
   }
 
@@ -74,7 +84,12 @@ abstract class TableQuerier implements Comparable<TableQuerier> {
     if (resultSet == null) {
       stmt = getOrCreatePreparedStatement(db);
       resultSet = executeQuery();
-      schema = DataConverter.convertSchema(name, resultSet.getMetaData());
+      valueSchema = DataConverter.convertSchema(name, resultSet.getMetaData());      
+ 
+      if (keyColumn != null && !keyColumn.isEmpty()) {
+        keySchema = SchemaBuilder.struct().name(name).field(keyColumn, valueSchema.field(keyColumn).schema()).build();
+        //log.info("keySchema {}", keySchema.toString());                                         
+      }
     }
   }
 
@@ -92,7 +107,8 @@ abstract class TableQuerier implements Comparable<TableQuerier> {
     resultSet = null;
     // TODO: Can we cache this and quickly check that it's identical for the next query
     // instead of constructing from scratch since it's almost always the same
-    schema = null;
+    valueSchema = null;  
+    keySchema = null;
 
     lastUpdate = now;
   }
